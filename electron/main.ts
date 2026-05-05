@@ -1889,6 +1889,56 @@ export class AppState {
   private setupIntelligenceEvents(): void {
     const mainWindow = this.getMainWindow.bind(this)
 
+    // Sprint 9: time-batched IPC token sends.
+    //
+    // Each LLM streaming token previously fired one webContents.send → one
+    // structured-clone serialization → one IPC message. For a 400-token
+    // answer at 100 tok/s that's 400 IPC messages over 4 seconds. With
+    // Groq at 200+ tok/s the rate gets uncomfortable.
+    //
+    // Coalesce per-tick: a token arriving in the current libuv iteration
+    // adds to a per-kind buffer. The first add schedules a setImmediate
+    // flush that drains all buffers in one webContents.send per kind
+    // (carrying an items array). Net: ~3-5× fewer IPC messages on hot
+    // streams with no perceptible latency cost (sub-frame).
+    //
+    // The old per-token channels (intelligence-suggested-answer-token, etc.)
+    // are NO LONGER USED for these 5 streams. The single
+    // 'intelligence-token-batch' channel replaces them. The old channel
+    // names + preload bridges are kept (defense-in-depth, no callers).
+    type BatchKind = 'suggested_answer' | 'refined_answer' | 'recap' | 'clarify' | 'follow_up_questions';
+    const tokenBatches = new Map<BatchKind, any[]>();
+    let batchFlushScheduled = false;
+    const flushBatchesNow = () => {
+      const win = mainWindow();
+      if (!win) { tokenBatches.clear(); return; }
+      for (const [kind, items] of tokenBatches.entries()) {
+        if (items.length > 0) {
+          win.webContents.send('intelligence-token-batch', { kind, items });
+        }
+      }
+      tokenBatches.clear();
+    };
+    const scheduleBatchFlush = () => {
+      if (batchFlushScheduled) return;
+      batchFlushScheduled = true;
+      setImmediate(() => {
+        batchFlushScheduled = false;
+        flushBatchesNow();
+      });
+    };
+    const queueBatch = (kind: BatchKind, item: any) => {
+      let arr = tokenBatches.get(kind);
+      if (!arr) { arr = []; tokenBatches.set(kind, arr); }
+      arr.push(item);
+      scheduleBatchFlush();
+    };
+    // ORDER: every final-answer handler must call this BEFORE its own send so
+    // the renderer sees (..., last tokens, final answer) and not (..., final
+    // answer, trailing tokens) — the latter would clobber the just-finalized
+    // row with appended text from a pending setImmediate batch.
+    const flushBatchesBeforeFinal = flushBatchesNow;
+
     // Forward intelligence events to renderer
     this.intelligenceManager.on('assist_update', (insight: string) => {
       // Send to both if both exist, though mostly overlay needs it
@@ -1898,6 +1948,7 @@ export class AppState {
     })
 
     this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number) => {
+      flushBatchesBeforeFinal();
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-suggested-answer', { answer, question, confidence })
@@ -1906,10 +1957,8 @@ export class AppState {
     })
 
     this.intelligenceManager.on('suggested_answer_token', (token: string, question: string, confidence: number) => {
-      const win = mainWindow()
-      if (win) {
-        win.webContents.send('intelligence-suggested-answer-token', { token, question, confidence })
-      }
+      // Sprint 9: batch instead of per-token webContents.send.
+      queueBatch('suggested_answer', { token, question, confidence });
     })
 
     // Sprint 7: dedicated negotiation-coaching channel. Engine emits this
@@ -1917,6 +1966,9 @@ export class AppState {
     // the coaching sentinel, so the renderer no longer needs JSON.parse-
     // every-token detection.
     this.intelligenceManager.on('negotiation_coaching', (payload: unknown) => {
+      // Sprint 9: flush any pending batched tokens first so the renderer
+      // sees them before the coaching card swap.
+      flushBatchesBeforeFinal();
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-negotiation-coaching', { payload })
@@ -1924,13 +1976,12 @@ export class AppState {
     })
 
     this.intelligenceManager.on('refined_answer_token', (token: string, intent: string) => {
-      const win = mainWindow()
-      if (win) {
-        win.webContents.send('intelligence-refined-answer-token', { token, intent })
-      }
+      // Sprint 9: batch.
+      queueBatch('refined_answer', { token, intent });
     })
 
     this.intelligenceManager.on('refined_answer', (answer: string, intent: string) => {
+      flushBatchesBeforeFinal();
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-refined-answer', { answer, intent })
@@ -1939,6 +1990,7 @@ export class AppState {
     })
 
     this.intelligenceManager.on('recap', (summary: string) => {
+      flushBatchesBeforeFinal();
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-recap', { summary })
@@ -1946,13 +1998,12 @@ export class AppState {
     })
 
     this.intelligenceManager.on('recap_token', (token: string) => {
-      const win = mainWindow()
-      if (win) {
-        win.webContents.send('intelligence-recap-token', { token })
-      }
+      // Sprint 9: batch.
+      queueBatch('recap', { token });
     })
 
     this.intelligenceManager.on('clarify', (clarification: string) => {
+      flushBatchesBeforeFinal();
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-clarify', { clarification })
@@ -1960,13 +2011,12 @@ export class AppState {
     })
 
     this.intelligenceManager.on('clarify_token', (token: string) => {
-      const win = mainWindow()
-      if (win) {
-        win.webContents.send('intelligence-clarify-token', { token })
-      }
+      // Sprint 9: batch.
+      queueBatch('clarify', { token });
     })
 
     this.intelligenceManager.on('follow_up_questions_update', (questions: string) => {
+      flushBatchesBeforeFinal();
       const win = mainWindow()
       if (win) {
         win.webContents.send('intelligence-follow-up-questions-update', { questions })
@@ -1974,10 +2024,8 @@ export class AppState {
     })
 
     this.intelligenceManager.on('follow_up_questions_token', (token: string) => {
-      const win = mainWindow()
-      if (win) {
-        win.webContents.send('intelligence-follow-up-questions-token', { token })
-      }
+      // Sprint 9: batch.
+      queueBatch('follow_up_questions', { token });
     })
 
     this.intelligenceManager.on('manual_answer_started', () => {

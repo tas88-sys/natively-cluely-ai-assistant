@@ -151,6 +151,11 @@ interface ElectronAPI {
   // Sprint 7: dedicated negotiation-coaching channel. Replaces the
   // sentinel-string multiplex through suggested_answer_token / suggested_answer.
   onIntelligenceNegotiationCoaching: (callback: (data: { payload: any }) => void) => () => void
+  // Sprint 9: time-batched IPC token channel. Carries a batch of streaming
+  // tokens for ANY of the 5 streaming kinds in one IPC send. Replaces
+  // per-token sends to the 5 individual channels (which still exist as
+  // unused defense-in-depth bridges).
+  onIntelligenceTokenBatch: (callback: (data: { kind: 'suggested_answer' | 'refined_answer' | 'recap' | 'clarify' | 'follow_up_questions'; items: any[] }) => void) => () => void
 
   // Model Management
   getDefaultModel: () => Promise<{ model: string }>
@@ -784,6 +789,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("intelligence-negotiation-coaching", subscription)
     return () => {
       ipcRenderer.removeListener("intelligence-negotiation-coaching", subscription)
+    }
+  },
+  // Sprint 9: time-batched IPC token channel.
+  onIntelligenceTokenBatch: (callback: (data: { kind: string; items: any[] }) => void) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-token-batch", subscription)
+    return () => {
+      ipcRenderer.removeListener("intelligence-token-batch", subscription)
     }
   },
   onIntelligenceRefinedAnswerToken: (callback: (data: { token: string; intent: string }) => void) => {

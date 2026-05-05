@@ -1152,6 +1152,28 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             });
         }));
 
+        // Sprint 9: time-batched token channel — single subscription that
+        // unrolls a kind-tagged items array onto the existing queueToken path.
+        // The 5 per-token channels (intelligence-suggested-answer-token,
+        // intelligence-refined-answer-token, etc.) are no longer being sent
+        // by main.ts for these streams — their handlers above are now inert
+        // safety nets and only fire if some other code path emits them.
+        cleanups.push(window.electronAPI.onIntelligenceTokenBatch((data) => {
+            const { kind, items } = data;
+            if (!items || items.length === 0) return;
+            if (kind === 'suggested_answer') {
+                for (const it of items) queueToken('what_to_answer', (it as any).token);
+            } else if (kind === 'refined_answer') {
+                for (const it of items) queueToken((it as any).intent, (it as any).token);
+            } else if (kind === 'recap') {
+                for (const it of items) queueToken('recap', (it as any).token);
+            } else if (kind === 'clarify') {
+                for (const it of items) queueToken('clarify', (it as any).token);
+            } else if (kind === 'follow_up_questions') {
+                for (const it of items) queueToken('follow_up_questions', (it as any).token);
+            }
+        }));
+
         // Sprint 7: dedicated negotiation-coaching channel.
         // The engine now intercepts the coaching sentinel server-side and
         // emits this event INSTEAD of suggested_answer / suggested_answer_token.
