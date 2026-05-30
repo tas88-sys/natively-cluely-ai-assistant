@@ -1,0 +1,18 @@
+%% Natively — sequence: a live question gets answered
+sequenceDiagram
+    autonumber
+    participant Them as Interviewer (system audio)
+    participant Native as Rust capture
+    participant STT as STT provider
+    participant IM as IntelligenceEngine
+    participant LLM as LLM provider
+    participant OV as Overlay
+    Them->>Native: speaks "What's the time complexity?"
+    Native->>Native: 20ms PCM frames, RMS gate
+    Native->>STT: stream PCM (WebSocket/gRPC)
+    STT-->>IM: transcript {speaker:'interviewer', final:true}
+    IM->>IM: SessionTracker buffer + IntentClassifier -> coding/clarify
+    IM->>IM: PlannerDecision -> "answer"
+    IM->>LLM: prompt (rolling context + persona + retrieved refs)
+    LLM-->>OV: stream tokens -> "O(n log n) because..."
+    Note over OV: invisible to screen-share

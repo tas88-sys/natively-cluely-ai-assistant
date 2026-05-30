@@ -1,0 +1,15 @@
+%% Natively — screenshot capture + vision pipeline
+flowchart TD
+    K1["Cmd/Ctrl+H (capture to queue)"] --> CAP
+    K2["Cmd+Shift+Enter (capture AND analyze now)"] --> CAP
+    K3["Selective region (CropperWindow draws rectangle)"] --> CAP
+    CAP["ScreenshotHelper -> desktopCapturer.getSources({types:['screen']})"]
+    CAP -->|"still PNG (multi-monitor stitch via sharp)"| Q["On-disk queue userData/screenshots/*.png - MAX 5 (FIFO)"]
+    Q -->|"only file paths held in memory"| PROC["ProcessingHelper -> LLMHelper.generateWithVisionFallback()"]
+    PROC --> CHAIN
+    subgraph CHAIN["Vision fallback chain (first that works wins)"]
+        direction LR
+        V1["Codex CLI (if on)"] --> V2["OpenAI"] --> V3["Claude"] --> V4["Gemini Flash"] --> V5["Gemini Pro"] --> V6["Groq Llama-4 Scout"] --> V7["custom cURL / Ollama"]
+    end
+    CHAIN -->|streamed answer| OVL["Overlay window"]
+    Q -.->|"cleared after analysis / clearQueues()"| DEL["deleted - never written to DB"]

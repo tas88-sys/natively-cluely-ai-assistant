@@ -1,0 +1,26 @@
+%% Natively — dual-channel audio capture + STT pipeline
+flowchart LR
+    subgraph CaptureMac["macOS capture (Rust)"]
+        M1["CoreAudio process-tap (14.4+)"]
+        M2["ScreenCaptureKit fallback (13+, 48kHz)"]
+    end
+    subgraph CaptureWin["Windows capture (Rust)"]
+        W1["WASAPI loopback (output device, eMultimedia role)"]
+    end
+    subgraph Mic["Microphone (all OS)"]
+        C1["CPAL device capture"]
+    end
+
+    M1 & M2 --> SYS["System-audio stream"]
+    W1 --> SYS
+    C1 --> MICCH["Mic stream"]
+
+    SYS --> DSP1["Silence suppress - RMS gate (VAD OFF for system)"]
+    MICCH --> DSP2["Silence suppress - RMS gate + WebRTC VAD ON"]
+
+    DSP1 -->|"PCM i16, 20ms frames"| STT1["STT instance #1 - label = interviewer"]
+    DSP2 -->|"PCM i16, 20ms frames"| STT2["STT instance #2 - label = user"]
+
+    STT1 & STT2 -->|"transcript {speaker, text, final}"| IE["IntelligenceManager.handleTranscript()"]
+    STT1 -.WS/gRPC.-> P["Provider: Deepgram / Google / Soniox / ElevenLabs / OpenAI / Groq / Local Whisper / Natively API"]
+    STT2 -.-> P

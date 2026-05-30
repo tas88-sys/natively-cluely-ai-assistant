@@ -1,0 +1,8 @@
+%% Natively — IntentClassifier 3-tier model
+flowchart TD
+    IN["lastInterviewerTurn"] --> T1{"Tier 1: regex fast-path (<1ms)"}
+    T1 -->|match| OUT["IntentResult {intent, confidence, answerShape}"]
+    T1 -->|"no match & len>5"| T2{"Tier 2: zero-shot SLM - Xenova/mobilebert-uncased-mnli (~100MB) - top score >= 0.35?"}
+    T2 -->|yes| OUT
+    T2 -->|"no / model unavailable"| T3["Tier 3: context heuristic - short interviewer turn after >=2 replies -> follow_up; else general @ 0.5"]
+    T3 --> OUT

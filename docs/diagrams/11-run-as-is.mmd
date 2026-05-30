@@ -1,0 +1,9 @@
+%% Natively — running this repo as-is (build/setup flow)
+flowchart TD
+    A["git clone"] --> B["npm install (postinstall: rebuild sharp + better-sqlite3 + keytar, download models, ensure sqlite-vec, patch plist[mac])"]
+    B --> C{".node native module present?"}
+    C -->|"NOT committed to repo"| D["npm run build:native - needs Rust + platform C/C++ toolchain"]
+    C -->|"official installer ships it"| E
+    D --> E["npm start (Vite dev server + Electron)"]
+    E --> F["Add >=1 STT key + >=1 LLM key (BYOK) OR run Ollama"]
+    F --> G["Core works: dual-channel transcription, live answers, screenshot vision, local RAG, General mode"]

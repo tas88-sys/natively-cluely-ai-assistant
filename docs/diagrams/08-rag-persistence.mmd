@@ -1,0 +1,16 @@
+%% Natively — local memory / RAG / persistence (meeting lifecycle)
+flowchart LR
+    subgraph Live["During meeting"]
+        TR["Final transcript segments"] --> LIVE["LiveRAGIndexer (just-in-time, in-session)"]
+    end
+    subgraph Stop["On Stop (MeetingPersistence.stopMeeting)"]
+        MP["snapshot transcript/usage/context"]
+        MP -->|"retention=never -> skip"| SKIP["nothing stored"]
+        MP --> SAVE["save meeting + transcript rows (isProcessed=false)"]
+        SAVE --> BG["background: title + structured summary LLM"]
+    end
+    SAVE --> CHUNK["SemanticChunker (~400-token chunks, sliding overlap)"]
+    CHUNK --> EMB["EmbeddingPipeline (OpenAI / Gemini / Ollama / local)"]
+    EMB --> VEC[("vec_chunks_768 - sqlite-vec ANN index")]
+    Q["Later: What did John say about the API?"] --> RET["VectorStore.search() - native sqlite-vec, else JS-cosine fallback (worker thread)"]
+    VEC --> RET --> ANS["RAG answer via LLMHelper"]

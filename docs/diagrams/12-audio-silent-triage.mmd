@@ -1,0 +1,17 @@
+%% Natively — operator triage: audio silent / not transcribing
+flowchart TD
+    A["Audio silent / not transcribing"] --> B{STT status pill?}
+    B -->|"failed"| F["Provider gave up: auth/quota/max-retries. Verify API key + quota; switch provider; restart"]
+    B -->|"reconnecting"| R["Socket drops, backing off. Check network/DNS/VPN; self-recovers after 5s stable"]
+    B -->|"connected, but no text"| G{Level bars moving? (Settings->Audio)}
+    B -->|"awaiting-audio (stuck)"| C{Which channel is dead?}
+    C -->|"mic / user"| MIC["Mic muted at OS or wrong device. Win: Settings->Privacy->Microphone. mac: re-grant Microphone"]
+    C -->|"system / interviewer"| SYS{Banner text?}
+    SYS -->|"screen-recording-revoked-rebuild (mac)"| TCC["macOS TCC broke after update (cdhash). Screen Recording: toggle Natively OFF/ON, restart"]
+    SYS -->|"system-audio-permission-denied"| PERM["Screen Recording never granted (mac). Windows has no such permission"]
+    SYS -->|"system-audio-stuck (~12s no chunks)"| STUCK["Output device changed (AirPods/HFP/BlackHole/HDMI). App rebuilds capture; re-select output or restart"]
+    SYS -->|"no banner, just silence"| NONE["STT provider = none (silent-null) or key missing. Settings->Audio: confirm provider + key"]
+    G -->|no| NATIVE{Native module loaded?}
+    G -->|yes| NONE
+    NATIVE -->|"dev build / no .node"| NB["loadNativeModule()=null -> empty device list. Run npm run build:native or reinstall official app"]
+    NATIVE -->|loaded| NONE

@@ -801,6 +801,8 @@ Natively processes audio, screen context, and user input locally, maintains a ro
 
 No raw audio, screenshots, or transcripts are stored or transmitted unless explicitly enabled by the user.
 
+> 📐 **Engineering deep dive:** For a detailed, code-verified breakdown of how every subsystem actually works — the dual-channel audio + STT pipeline, screenshot/vision flow, STT reconnect/resilience, the intent classifier + planner, local RAG, platform support, and a step-by-step Windows dev setup — see **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ---
 
 ## Technical Details

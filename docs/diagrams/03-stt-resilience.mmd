@@ -1,0 +1,14 @@
+%% Natively — STT reconnect / resilience state machine (per-provider)
+flowchart TD
+    START["Meeting start -> createSTTProvider(speaker)"] --> SEL["Pick provider from CredentialsManager.getSttProvider() (GoogleSTT = only static fallback if key missing)"]
+    SEL --> CONN["Connect WS/gRPC - IPv4-only DNS + 15s handshake cap (dnsHelpers.ts)"]
+    CONN --> OK{Connected?}
+    OK -->|yes| STABLE["Run; reset backoff ONLY after 5s stable (anti-storm guard)"]
+    OK -->|"error / close != 1000"| CLASS{Error type?}
+    CLASS -->|"DNS ENOTFOUND/EAI_AGAIN"| DNS["Fixed 10s retry (does NOT burn backoff)"]
+    CLASS -->|"auth / quota"| FATAL["Latch reconnect OFF (terminal) - don't drain quota"]
+    CLASS -->|transient| BACK["Capped exponential backoff: base 1-1.5s, cap 30s, 2^N<=64, +-20% jitter; max attempts 10 (NativelyPro: indefinite)"]
+    DNS --> CONN
+    BACK --> CONN
+    STABLE -->|socket drops| CLASS
+    STABLE -. buffers <=500 chunks ~10s during gap .-> STABLE

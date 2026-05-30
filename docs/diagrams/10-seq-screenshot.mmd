@@ -1,0 +1,16 @@
+%% Natively — sequence: a screenshot is analyzed
+sequenceDiagram
+    autonumber
+    participant U as You
+    participant Main as Main process
+    participant SH as ScreenshotHelper
+    participant FS as Disk (<=5)
+    participant Vis as Vision LLM
+    participant OV as Overlay
+    U->>Main: Cmd+Shift+Enter
+    Main->>SH: capture
+    SH->>SH: desktopCapturer.getSources() -> still PNG (stitch monitors)
+    SH->>FS: save uuid.png (evict oldest if >5)
+    Main->>Vis: send PNG + prompt (fallback chain)
+    Vis-->>OV: stream solution/explanation
+    Main->>FS: clear queue after analysis (temp only)

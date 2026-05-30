@@ -1,0 +1,21 @@
+%% Natively — PlannerDecision tree (decides whether/how to respond)
+flowchart TD
+    A["planNextAssistantAction(input)"] --> B{text or images?}
+    B -->|no| S1["silent: no_context"]
+    B -->|yes| C{"cooldown active? (default 3000ms, skipped if images)"}
+    C -->|yes| S2["silent: cooldown"]
+    C -->|no| D{"confidence < 0.5 and no images?"}
+    D -->|yes| S3["silent: low_confidence"]
+    D -->|no| E{restatement + incomplete?}
+    E -->|yes| R1["clarify"]
+    E -->|no| F{recap pattern?}
+    F -->|yes| R2["recap"]
+    F -->|no| G{follow-up-questions pattern?}
+    G -->|yes| R3["follow_up_questions"]
+    G -->|no| H{clarify pattern?}
+    H -->|yes| R4["clarify"]
+    H -->|no| I{"brainstorm OR images OR detected coding Q?"}
+    I -->|yes| R5["brainstorm"]
+    I -->|no| J{"intent supports answer OR question signal (? / wh-word)?"}
+    J -->|yes| R6["answer"]
+    J -->|no| S4["silent: no_actionable_question"]

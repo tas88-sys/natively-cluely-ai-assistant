@@ -1,0 +1,11 @@
+%% Natively — live intelligence pipeline (transcript -> answer)
+flowchart TD
+    T["New transcript segment {speaker, text, final}"] --> ST
+    ST["SessionTracker - rolling ~120s window, assistant reply history (anti-repeat), epoch summaries on overflow"] --> IC
+    IC["IntentClassifier (3-tier)"] --> PL
+    PL["PlannerDecision.planNextAssistantAction() -> silent | answer | clarify | recap | follow_up_questions | brainstorm"]
+    PL -->|silent| NOOP["(stay quiet)"]
+    PL -->|act| MCR["ModeContextRetriever - BM25-style retrieval over active persona reference files (PDF/DOCX) + custom context"]
+    MCR --> PR["ProviderRouter.routeLLMProviders() - build fallback chain; respect data-scope policy + capability"]
+    PR --> LLM["Mode-specific LLM (AnswerLLM / ClarifyLLM / RecapLLM / FollowUpLLM / CodeHintLLM / BrainstormLLM)"]
+    LLM -->|"token stream: suggested_answer_token"| OV["Overlay (React) renders live"]

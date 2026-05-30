@@ -1,0 +1,50 @@
+%% Natively — high-level architecture (processes, windows, subsystems)
+flowchart TB
+    subgraph User["Your machine"]
+        subgraph Main["Electron MAIN process (Node) - electron/main.ts (~5100 lines)"]
+            WH["WindowHelper (launcher + overlay)"]
+            HELPERS["Settings / ModelSelector / Cropper helpers"]
+            IPC["ipcHandlers.ts (renderer<->main bridge)"]
+            SH["ScreenshotHelper (desktopCapturer)"]
+            PH["ProcessingHelper (vision orchestration)"]
+            IM["IntelligenceManager / IntelligenceEngine"]
+            ST["SessionTracker (rolling context)"]
+            AUD["Audio layer (System + Mic capture, STT)"]
+            RAG["RAGManager + DatabaseManager"]
+            CM["CredentialsManager (encrypted keys)"]
+            MODES["ModesManager (personas)"]
+        end
+        subgraph Rend["Renderer windows (React + Vite)"]
+            OV["Overlay (always-on-top, click-through)"]
+            LA["Launcher / Dashboard"]
+            SET["Settings"]
+        end
+        subgraph Native["Rust native module (.node, NAPI-RS)"]
+            SAC["SystemAudioCapture - mac: CoreAudio+SCK / win: WASAPI loopback"]
+            MIC["MicrophoneCapture (CPAL)"]
+            VAD["Silence + WebRTC VAD"]
+            HW["HardwareID / license / stealth"]
+        end
+        DB[("SQLite + sqlite-vec - natively.db")]
+        FS[("screenshots/*.png - temp, <=5")]
+    end
+    subgraph Cloud["External services (BYO key)"]
+        STT["STT providers"]
+        LLM["LLM providers"]
+    end
+
+    Rend <-->|IPC| IPC
+    IPC --- WH & SH & PH & IM & AUD & RAG & MODES & CM
+    AUD --> Native
+    Native -->|PCM frames| AUD
+    AUD -->|audio| STT
+    STT -->|transcript| IM
+    IM --> ST
+    IM -->|prompt| LLM
+    LLM -->|streamed tokens| OV
+    SH --> FS
+    PH -->|PNG image| LLM
+    RAG --> DB
+    CM -.->|reads keys| AUD & IM & PH
+    WH --> OV & LA
+    HELPERS --> SET
