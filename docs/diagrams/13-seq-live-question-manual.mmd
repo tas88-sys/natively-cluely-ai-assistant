@@ -1,0 +1,19 @@
+sequenceDiagram
+    autonumber
+    participant Them as Interviewer (system audio)
+    participant STT as STT provider
+    participant ST as SessionTracker
+    participant You as You (operator)
+    participant ENG as IntelligenceEngine
+    participant LLM as WhatToAnswerLLM
+    participant OV as Overlay
+    Them->>STT: "What's the time complexity of your approach?"
+    STT-->>ST: transcript {speaker:'interviewer', final:true}
+    ST-->>OV: native-audio-transcript -> live captions (no answer yet)
+    Note over ST,ENG: interim partials may fire a speculative pre-warm, but it never surfaces an answer
+    You->>ENG: press Cmd/Ctrl+1 -> generate-what-to-say (question = undefined)
+    ENG->>ENG: getContext(180) + last interim + classifyIntent() (shape only)
+    ENG->>LLM: generateStream(preparedTranscript, temporalContext, intent)
+    LLM-->>ENG: stream tokens (accumulated into fullAnswer)
+    ENG-->>OV: suggested_answer_token + suggested_answer (full answer in one shot)
+    Note over OV: rendered in the click-through overlay, hidden from screen-share

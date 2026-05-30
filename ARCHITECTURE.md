@@ -11,8 +11,9 @@ RAG store, the resilience machinery, licensing, platform support, and how to bui
 (especially on Windows).
 
 **See also:**
-- 📊 **[docs/diagrams/](docs/diagrams/README.md)** — all 12 diagrams below as standalone, rendered
-  Mermaid (with `.mmd` sources + SVG/PNG render scripts).
+- 📊 **[docs/diagrams/](docs/diagrams/README.md)** — all 13 diagrams below as standalone, rendered
+  Mermaid (with `.mmd` sources + SVG/PNG render scripts). Diagram #13 is the **live (manual) Q&A trigger** —
+  see [§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path).
 - 🛠️ **[docs/runbook/AUDIO_TROUBLESHOOTING.md](docs/runbook/AUDIO_TROUBLESHOOTING.md)** — operator
   triage for "audio went silent / nothing is transcribing".
 
@@ -28,6 +29,7 @@ RAG store, the resilience machinery, licensing, platform support, and how to bui
 6. [STT resilience / failover / reconnect](#6-stt-resilience--failover--reconnect)
 7. [Screen capture / vision / OCR pipeline](#7-screen-capture--vision--ocr-pipeline)
 8. [Live intelligence pipeline (transcript → answer)](#8-live-intelligence-pipeline-transcript--answer)
+    - [8.1 How an answer actually gets generated (the live interview Q&A path)](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path)
 9. [Intent classifier + planner internals](#9-intent-classifier--planner-internals)
 10. [Local memory / RAG / persistence](#10-local-memory--rag--persistence)
 11. [Providers, models & API keys](#11-providers-models--api-keys)
@@ -72,6 +74,8 @@ fully local with Ollama + local Whisper).
 | **Do I get Speaker Diarization out of the box?** | **No.** Not implemented anywhere — it is a README marketing claim. You get **2-channel attribution**: system audio → `interviewer`, mic → `user`. | `main.ts:1421–1447`; repo grep for "diariz" |
 | **Does audio transcription work on Windows?** | **Yes** — system audio via **WASAPI loopback**, mic via **CPAL** — *but only if the Rust native module is compiled* (no prebuilt binary ships in the repo). | `native-module/src/speaker/windows.rs`, `Cargo.toml:46–49` |
 | **Does diarization work on Windows?** | **No — it doesn't work on any platform.** | feature absent in code |
+| **When the interviewer asks something, does it auto-answer?** | **No — you trigger it.** Transcription + live captions are automatic, but the answer is on-demand: press **What to Answer** (`Cmd/Ctrl+1`) or click the overlay button. The question is *inferred from the rolling transcript* (you don't type it). | `KeybindManager.ts:24`, `NativelyInterface.tsx:2090,2129`; see [§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path) |
+| **Isn't there an "intent classifier + planner" that decides when to answer?** | **It exists but is *not wired* to a live trigger** (test-only). The auto-gate (`handleSuggestionTrigger`→`PlannerDecision`) has no runtime caller; the live trigger is the manual hotkey. The classifier *does* run live, but only to **shape** the answer. | `grep .handleSuggestionTrigger(` → only `__tests__`; [§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path), [§9](#9-intent-classifier--planner-internals) |
 
 ---
 
@@ -322,17 +326,141 @@ flowchart TD
     style NOOP fill:#2a2a2a,color:#aaa
 ```
 
-The notable design point: Natively **doesn't answer every sentence.** An intent classifier + a planner
-decide whether the latest speech is actually a question worth answering, so the overlay stays quiet during
-normal back-and-forth and only fires when warranted.
+The design intent (above) is that an intent classifier + planner decide whether the latest speech is worth
+answering, so the overlay only fires when warranted. **In the shipping wiring, however, the answer is
+triggered *by you*, not auto-fired** — the planner auto-gate is implemented but not connected to any runtime
+trigger. The diagram above is the *designed* pipeline; for the path that actually runs in a live meeting —
+who pulls the trigger, what feeds the LLM, and which parts are dormant — read **[§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path)** next.
 
 Per-turn LLMs live in `electron/llm/`: `AnswerLLM`, `AssistLLM`, `ClarifyLLM`, `RecapLLM`, `FollowUpLLM`,
 `FollowUpQuestionsLLM`, `CodeHintLLM`, `BrainstormLLM`, plus `ConversationSummarizer` (epoch summaries) and
 `GeminiPromptCache` (prompt caching for Gemini).
 
+### 8.1 How an answer actually gets generated (the live interview Q&A path)
+
+> **TL;DR** — Transcription and live captions are automatic; **the answer is on-demand.** When the
+> interviewer asks something, you press the **What to Answer** hotkey (`Cmd/Ctrl+1`) — or click the overlay
+> button — and Natively *infers the question from the rolling transcript* and streams an answer. It does
+> **not** auto-fire an answer after every interviewer turn.
+
+**Operator's-eye view (what happens in a real session):**
+
+1. Interviewer speaks → system audio is transcribed → the words scroll live in the overlay's **rolling
+   caption bar** (`NativelyInterface.tsx:1816–1838`). *No answer yet.*
+2. You press **What to Answer** (`Cmd/Ctrl+1` — global/stealth, works even when Natively isn't focused) or
+   click the button (`NativelyInterface.tsx:4554`). For an on-screen problem, press **Capture Screen & Ask
+   AI** (`Cmd/Ctrl+Shift+Enter`) to attach a screenshot to the same call.
+3. The overlay shows "generating", then the suggested answer appears (invisible to screen-share). You
+   read/paraphrase it.
+4. Refine by voice or hotkey: saying *"make it shorter / rephrase that"* into your mic, or pressing the
+   follow-up keys, rewrites the last answer.
+
+**The exact code path (hop by hop):**
+
+| # | Hop | File:line |
+|---|-----|-----------|
+| 1 | Interviewer audio → STT provider emits `{text, isFinal, confidence}` | `DeepgramStreamingSTT.ts:181`, `GoogleSTT.ts:369` |
+| 2 | `createSTTProvider` tags `speaker:'interviewer'`, calls `intelligenceManager.handleTranscript(...)` **and** broadcasts `native-audio-transcript` to the windows | `main.ts:1377`, `1421–1447` |
+| 3 | `SessionTracker` stores **final** segments in the 120 s rolling context, tracks the latest interim interviewer partial, and sniffs for coding questions | `SessionTracker.ts:314–350`, `:39` |
+| 4 | Renderer renders interviewer transcripts as **captions only — no auto-trigger** | `NativelyInterface.tsx:1789–1838` |
+| 5 | **You** press `Cmd/Ctrl+1` → main maps `chat:whatToAnswer`→`whatToAnswer` and sends a `global-shortcut` event to the surfaces | `KeybindManager.ts:24`, `main.ts:748–762` |
+| 6 | Renderer `onGlobalShortcut` handler → `handleWhatToSay()` | `NativelyInterface.tsx:3700–3706`, `:2090` |
+| 7 | `generateWhatToSay(undefined, images?, opts?)` → IPC `generate-what-to-say` (**question is `undefined` — to be inferred**) | `NativelyInterface.tsx:2129`, `preload.ts:1305` |
+| 8 | IPC handler (runs vision on any attached image first) → `runWhatShouldISay(question, 0.8, imagePaths, {screenContext, …})` | `ipcHandlers.ts:3135`, `:3248` |
+| 9 | Engine: 3 s cooldown gate → build prepared transcript (`getContext(180)` + injected interim partial) + temporal context → `classifyIntent()` (**shapes** the answer) → `WhatToAnswerLLM.generateStream()` | `IntelligenceEngine.ts:522`, `:568–623` |
+| 10 | Engine accumulates the streamed tokens, then emits the **full** answer once: `suggested_answer_token` then `suggested_answer` | `IntelligenceEngine.ts:626–685` |
+| 11 | Main batches → `intelligence-token-batch`, then finalizes with `intelligence-suggested-answer` | `main.ts:3806–3808`, `:3797–3801` |
+| 12 | Renderer fills the answer panel → `finalizeStreamingByIntent('what_to_answer', …)` | `NativelyInterface.tsx:1903–1918`, `:1889–1892` |
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Them as Interviewer (system audio)
+    participant STT as STT provider
+    participant ST as SessionTracker
+    participant You as You (operator)
+    participant ENG as IntelligenceEngine
+    participant LLM as WhatToAnswerLLM
+    participant OV as Overlay
+    Them->>STT: "What's the time complexity of your approach?"
+    STT-->>ST: transcript {speaker:'interviewer', final:true}
+    ST-->>OV: native-audio-transcript → live captions (no answer yet)
+    Note over ST,ENG: interim partials may fire a speculative pre-warm (see below) — but that never surfaces an answer
+    You->>ENG: press Cmd/Ctrl+1 → generate-what-to-say (question = undefined)
+    ENG->>ENG: getContext(180) + last interim + classifyIntent() (shape only)
+    ENG->>LLM: generateStream(preparedTranscript, temporalContext, intent)
+    LLM-->>ENG: stream tokens (accumulated into fullAnswer)
+    ENG-->>OV: suggested_answer_token + suggested_answer (full answer in one shot)
+    Note over OV: rendered in the click-through overlay, hidden from screen-share
+```
+
+**Reality check — the answer is *triggered by you*, not auto-fired.**
+
+- The "intent classifier + planner decides when to answer" design (the `handleSuggestionTrigger` →
+  `PlannerDecision` path, [§9.2](#92-plannerdecision-electronllmplannerdecisionts)) **has no runtime
+  caller.** `grep` finds `.handleSuggestionTrigger(` only in
+  `electron/services/__tests__/IntelligenceEnginePlanner.test.mjs` — nothing in `main.ts`,
+  `ipcHandlers.ts`, or the renderer invokes it. It is implemented and unit-tested, but the
+  silent/answer/clarify/recap **auto-gate does not run in a live meeting.**
+- What *does* run on every trigger is `classifyIntent()` (`IntelligenceEngine.ts:603`) — but only to
+  **shape** the answer (coding vs behavioral vs deep-dive style, [§9.1](#91-intentclassifier-electronllmintentclassifierts)),
+  not to decide *whether* to answer.
+- The question text is **inferred from the last ~180 s of transcript** (plus the latest interim partial);
+  you don't type or select it. With no usable speech yet, you get the fallback *"Could you repeat that? …"*.
+- **Mic vs system audio:** only **interviewer** (system-audio) transcripts feed the inferred question; your
+  **mic** is shown/captured only while the voice **Answer / Record** mode is active
+  (`NativelyInterface.tsx:1790–1814`). The one exception that *is* automatic: spoken refinements on your mic
+  ("make it shorter", "rephrase that") are detected on mic finals and routed to `FollowUpLLM`
+  (`IntelligenceEngine.ts:271–276`).
+
+**Speculative pre-warm (interim partials).** While the interviewer is *still talking*, a high-confidence
+interim partial (≥ 7 words, confidence ≥ 0.75, containing a question signal) schedules a 350 ms-debounced
+*speculative* `runWhatShouldISay({speculative:true})` (`IntelligenceEngine.ts:209–237`). In the current
+wiring this **does not surface an answer** — its result is consumed only by the dormant
+`handleSuggestionTrigger` path. Its live effects are (a) warming the provider/prompt cache so your real
+`Cmd/Ctrl+1` answer streams faster, and (b) stamping `lastTriggerTime`, which means a speculative run that
+just completed can briefly trip the **3 s cooldown** and make a manual press return *"wait a few seconds"*.
+
+**Timing & gates on this path:**
+
+| Constant | Value | Where | Effect |
+|---|---|---|---|
+| `triggerCooldown` | 3000 ms | `IntelligenceEngine.ts:102` | Min gap between answers; **bypassed when an image is attached** |
+| `SPECULATIVE_DEBOUNCE_MS` | 350 ms | `:109` | Settle time before a speculative pre-warm fires |
+| `SPECULATIVE_MIN_WORDS` / `_MIN_CONFIDENCE` | 7 / 0.75 | `:110–111` | Gate for the speculative pre-warm |
+| answer context lookback | 180 s (within a 120 s-retained window) | `IntelligenceEngine.ts:568`, `SessionTracker.ts:39` | How much transcript feeds the inferred question |
+| confidence floor `< 0.5 → silent` | 0.5 | `IntelligenceEngine.ts:359` | **Dormant** — only in the planner path |
+
+**Streaming nuance.** Although `WhatToAnswerLLM.generateStream()` yields token-by-token
+(`WhatToAnswerLLM.ts:217–225`), `runWhatShouldISay` **accumulates the whole answer and emits it in one
+shot** (`IntelligenceEngine.ts:626–685`) — so the *primary* answer lands in the overlay as a single chunk
+after generation completes (a brief wait, then the full answer), not a live typewriter. The other modes
+(recap / clarify / follow-up / code-hint / brainstorm) *do* emit per token.
+
+**The sibling triggers (each a different hotkey → different LLM):**
+
+| Hotkey (default) | Action | Engine method / LLM | Use |
+|---|---|---|---|
+| `Cmd/Ctrl+1` | **What to Answer** | `runWhatShouldISay` / `WhatToAnswerLLM` | Answer the interviewer's question (this section) |
+| `Cmd/Ctrl+2` | Clarify | `runClarify` / `ClarifyLLM` | Ask a scoping question back |
+| `Cmd/Ctrl+3` | Recap / Brainstorm | `runRecap` / `runBrainstorm` | Summarize, or generate approaches |
+| `Cmd/Ctrl+4` | Follow-Up Questions | `runFollowUpQuestions` / `FollowUpQuestionsLLM` | Suggest questions *you* could ask |
+| `Cmd/Ctrl+5` | Answer / Record (voice) | `handleAnswerNow` | Capture *your* mic answer for refinement |
+| `Cmd/Ctrl+6` | Code Hint | `runCodeHint` / `CodeHintLLM` | Hint on code in a screenshot |
+| `Cmd/Ctrl+7` | Brainstorm | `runBrainstorm` / `BrainstormLLM` | 2–3 approaches with trade-offs |
+| `Cmd/Ctrl+Shift+Enter` | Capture Screen & Ask | screenshot → `handleWhatToSay` | Solve an on-screen problem |
+
+Hotkeys are user-rebindable; defaults are in `KeybindManager.ts:18–30`.
+
 ---
 
 ## 9. Intent classifier + planner internals
+
+> **Wiring status (read first):** In the shipping build the **IntentClassifier (§9.1) runs live** — it is
+> called by `runWhatShouldISay` to *shape* each answer. The **PlannerDecision (§9.2) does not run live** —
+> its only caller, `handleSuggestionTrigger`, has no runtime invoker (test-only). So the decision tree below
+> is the *designed* auto-trigger, not what gates a live answer; the live answer is user-triggered. See
+> [§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path).
 
 ### 9.1 IntentClassifier (`electron/llm/IntentClassifier.ts`)
 
@@ -491,6 +619,10 @@ you run *this* repo:
 
 **A live question gets answered:**
 
+> ⚠️ This diagram shows the *designed* auto-trigger (the `PlannerDecision` path), which is **dormant**
+> (test-only). For the path that actually runs — a **manual** `Cmd/Ctrl+1` trigger — see the sequence and
+> hop table in **[§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path)**.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -506,6 +638,7 @@ sequenceDiagram
     STT-->>IM: transcript {speaker:'interviewer', final:true}
     IM->>IM: SessionTracker buffer + IntentClassifier → coding/clarify
     IM->>IM: PlannerDecision → "answer"
+    Note over IM: ⚠️ dormant path — no runtime caller; live trigger is manual (see §8.1)
     IM->>LLM: prompt (rolling context + persona + retrieved refs)
     LLM-->>OV: stream tokens → "O(n log n) because…"
     Note over OV: invisible to screen-share
@@ -666,6 +799,11 @@ committed** — `git ls-files "*.node"` returns nothing. You obtain it one of tw
   and several integrations (Calendar/Jira/Phone-Link/Codex) are marketing-forward and/or live behind the
   **missing premium module**. The core (audio, STT, vision, RAG, General mode) is real and solid.
 - **No mid-meeting STT provider failover** — only per-provider reconnect; provider is fixed at meeting start.
+- **Live answers are user-triggered, not auto-fired.** Transcription/captions are automatic, but the answer
+  fires on the **What to Answer** hotkey (`Cmd/Ctrl+1`) / button. The "planner decides when to answer"
+  auto-gate (`handleSuggestionTrigger` → `PlannerDecision`) is implemented + unit-tested but **not wired to
+  any runtime caller** (test-only). The IntentClassifier *does* run live, but only to shape the answer. See
+  [§8.1](#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path).
 - **Screenshots are ephemeral** — never written to the DB; ≤5 in a temp queue, deleted after analysis.
 - **Vision-first** — Tesseract OCR exists but is bypassed; raw images go to the vision model.
 - **`sqlite-vec` may be JS-fallback on Windows** (still functional).

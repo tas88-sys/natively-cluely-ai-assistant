@@ -39,6 +39,7 @@ pwsh docs/diagrams/render.ps1 -Format png -Theme dark
 | 10 | Sequence: screenshot | [`10-seq-screenshot.mmd`](10-seq-screenshot.mmd) |
 | 11 | Run this repo as-is | [`11-run-as-is.mmd`](11-run-as-is.mmd) |
 | 12 | Operator: audio-silent triage | [`12-audio-silent-triage.mmd`](12-audio-silent-triage.mmd) |
+| 13 | Sequence: manual What-to-Answer trigger (the live path) | [`13-seq-live-question-manual.mmd`](13-seq-live-question-manual.mmd) |
 
 ---
 
@@ -165,6 +166,9 @@ flowchart TD
 
 ## 5. Live intelligence pipeline
 
+> Note: the `PlannerDecision` node is the *designed* auto-gate; it is **not wired to a runtime trigger**
+> (test-only). The live answer is user-triggered — see #13 and [§8.1](../../ARCHITECTURE.md#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path).
+
 ```mermaid
 flowchart TD
     T["New transcript segment {speaker, text, final}"] --> ST
@@ -191,6 +195,9 @@ flowchart TD
 ```
 
 ## 7. Planner decision tree
+
+> Note: this decision tree (`handleSuggestionTrigger` → `PlannerDecision`) is implemented and unit-tested
+> but **has no runtime caller** — it does not gate live answers. See #13 / [§8.1](../../ARCHITECTURE.md#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path).
 
 ```mermaid
 flowchart TD
@@ -236,6 +243,9 @@ flowchart LR
 ```
 
 ## 9. Sequence: live question
+
+> ⚠️ This shows the *designed* auto-trigger (`PlannerDecision`), which is **dormant** (test-only). For the
+> path that actually runs — a manual `Cmd/Ctrl+1` trigger — see **#13** below.
 
 ```mermaid
 sequenceDiagram
@@ -309,4 +319,34 @@ flowchart TD
     G -->|yes| NONE
     NATIVE -->|"dev build / no .node"| NB["loadNativeModule()=null -> empty device list. Run npm run build:native or reinstall official app"]
     NATIVE -->|loaded| NONE
+```
+
+## 13. Sequence: manual What-to-Answer trigger (the live path)
+
+> This is the trigger that **actually runs in a live meeting** — contrast with #9, which shows the
+> *designed* (currently **dormant**, test-only) planner auto-trigger. Transcription + captions are
+> automatic; the answer is **on-demand** via the What-to-Answer hotkey (`Cmd/Ctrl+1`) or the overlay button,
+> and the question is inferred from the rolling transcript. Full prose:
+> [../../ARCHITECTURE.md § 8.1](../../ARCHITECTURE.md#81-how-an-answer-actually-gets-generated-the-live-interview-qa-path).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Them as Interviewer (system audio)
+    participant STT as STT provider
+    participant ST as SessionTracker
+    participant You as You (operator)
+    participant ENG as IntelligenceEngine
+    participant LLM as WhatToAnswerLLM
+    participant OV as Overlay
+    Them->>STT: "What's the time complexity of your approach?"
+    STT-->>ST: transcript {speaker:'interviewer', final:true}
+    ST-->>OV: native-audio-transcript -> live captions (no answer yet)
+    Note over ST,ENG: interim partials may fire a speculative pre-warm, but it never surfaces an answer
+    You->>ENG: press Cmd/Ctrl+1 -> generate-what-to-say (question = undefined)
+    ENG->>ENG: getContext(180) + last interim + classifyIntent() (shape only)
+    ENG->>LLM: generateStream(preparedTranscript, temporalContext, intent)
+    LLM-->>ENG: stream tokens (accumulated into fullAnswer)
+    ENG-->>OV: suggested_answer_token + suggested_answer (full answer in one shot)
+    Note over OV: rendered in the click-through overlay, hidden from screen-share
 ```
